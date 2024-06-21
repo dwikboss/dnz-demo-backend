@@ -10,12 +10,7 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(cors({
-    origin: '*',
-    methods: ['GET', 'OPTIONS', 'PATCH', 'DELETE', 'POST', 'PUT'],
-    allowedHeaders: ['X-CSRF-Token', 'X-Requested-With', 'Accept', 'Accept-Version', 'Content-Length', 'Content-MD5', 'Content-Type', 'Date', 'X-Api-Version', 'Origin', 'X-Auth-Token'],
-    credentials: true
-}));
+app.use(cors({origin: /\.vercel\.app$/}));
 
 app.use(bodyParser.json());
 
