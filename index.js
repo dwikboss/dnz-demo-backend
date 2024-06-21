@@ -10,7 +10,14 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(cors());
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'OPTIONS', 'PATCH', 'DELETE', 'POST', 'PUT'],
+    allowedHeaders: ['X-CSRF-Token', 'X-Requested-With', 'Accept', 'Accept-Version', 'Content-Length', 'Content-MD5', 'Content-Type', 'Date', 'X-Api-Version', 'Origin', 'X-Auth-Token'],
+    credentials: true
+}));
+
+app.use(bodyParser.json());
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
