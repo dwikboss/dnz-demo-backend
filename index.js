@@ -4,14 +4,14 @@ const cors = require("cors");
 const bodyParser = require("body-parser");
 const dotenv = require("dotenv");
 const nodemailer = require('nodemailer');
+const axios = require("axios");
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(cors({origin: /\.vercel\.app$/}));
-
+app.use(cors());
 app.use(bodyParser.json());
 
 const openai = new OpenAI({
@@ -19,86 +19,96 @@ const openai = new OpenAI({
 });
 
 async function handleMessage(userDetails, userMessage, inventory) {
-    const inventoryItems = inventory.map(item => `
-        SKU: ${item["SKU"]}
-        Onderdeeltitel: ${item["Onderdeeltitel"]}
-        Onderdeel beschrijving: ${item["Onderdeel_beschrijving"]}
-        Prijs: €${item["Prijs_per_stuk"]}
-    `).join("\n");
-
-
-    const prompt = `
-        User firstname: ${userDetails[0]}
-        User lastname: ${userDetails[1]}
-        User email: ${userDetails[2]}
-        User message: ${userMessage}
-        
-        Inventory:
-        ${inventoryItems}
-
-        Based on the users message, identify which product(s) they want to order, the quantity, and the total price.
-        Respond in the following JSON format:
-        
-        {
-            "first_name": "User firstname",
-            "last_name": "User lastname",
-            "email": "User email",
-            "products": [
-                {
-                    "SKU": "1232BNMb",
-                    "Onderdeeltitel": "Moer M12 - HexaLock 456",
-                    "Onderdeel_beschrijving": "Moer voor een BMW X5 wielophanging",
-                    "Stuks": "20",
-                    "Totaalprijs": "60,00"
-                },
-                ...
-            ]
-        }.        
-    `;
+    const prompt = `I need keywords to use to lookup products in a large product inventory. From the user message, try to extract the product names and order amounts and put them in a JSON object. This is VERY IMPORTANT: create multiple variations of the keyword for a product. 
+    For example, from: -Ik wil graag 3 MPC-Systeemrails van 40/60 SVZ van Mupro L=6000, ook zou ik graag de Messing plug M10 x 35 mm willen hebben.- You would return a JSON in the following format: {
+    "product_1": {
+        "keywords": {
+            "keyword_variation_1": "MPC-Systeemrails 40/60 SVZ Mupro L=6000",
+            "keyword_variation_2": "40/60 MPC-Systeemrails SVZ",
+            "keyword_variation_3": "Mupro L=6000 MPC-Systeemrails 40/60 SVZ",
+            "keyword_variation_4": "Mupro L=6000 40/60 SVZ MPC-Systeemrails",
+            etc.
+        },
+        "amount": 3
+    },
+    "product_2":{
+        "keywords": {
+            "keyword_variation_1": "Messing plug M10 x 35 mm",
+            "keyword_variation_2": "M10 x 35 mm Messing plug",
+            "keyword_variation_3": "mm Messing plug M10 x 35",
+            "keyword_variation_4": "mm Messing M10 x 35 plug",
+            etc.
+        },
+        "amount": 1
+    }. The products are ALWAYS singular. When someone uses plurals it highly likely means they want multiple orders of that product. This is the user message: ${userMessage}. ALWAYS make the keywords are singular and NOT plural! Match the EXACT JSON structure from my example where the keyword variations are inside an object with the amount outside of it! Make atleast 25 variations! Also create some variations where the brandname has been omitted like MPC-Systeemrails 40/60 SVZ L=6000 for example. Also OMIT regular words like 'voor', 'van', 'graag', or any articles from the keywords.`;
 
     try {
         const completion = await openai.chat.completions.create({
+            model: "gpt-4-turbo",
+            response_format: { type: "json_object" },
             messages: [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": prompt}
+                { role: "system", content: "You are a helpful assistant." },
+                { role: "user", content: prompt }
             ],
-            model: "gpt-4o",
-            temperature: 0.5,
-            response_format: { "type": "json_object" },
         });
 
         const responseContent = completion.choices[0].message.content;
         console.log(responseContent);
-        return responseContent;
+        const orderDetails = JSON.parse(responseContent);
+        return await lookupProducts(orderDetails);
     } catch (error) {
         console.error("Error:", error);
         throw new Error("Failed to process message");
     }
 }
 
-// async function sendOrderEmail(userDetails, orderDetails) {
-//     const mailOptions = {
-//         from: process.env.SMTP_FROM,
-//         to: userDetails[2],
-//         subject: 'Uw bestelling bij De Nieuwe Zaak',
-//         text: `Beste ${userDetails[0]} ${userDetails[1]},
-        
-//         Bedankt voor uw bestelling:
+async function lookupProducts(orderDetails) {
+    const productPromises = Object.keys(orderDetails).map(async productKey => {
+        const product = orderDetails[productKey];
+        const { keywords, amount } = product;
+        let foundProduct = null;
 
-//         ${orderDetails.products.map(product => `
-//             Product: ${product.Onderdeeltitel}
-//             Beschrijving: ${product.Onderdeel_beschrijving}
-//             Aantal: ${product.Stuks}
-//             Totaalprijs: €${product.Totaalprijs}
-//         `).join('\n')}
-                
-//         Met vriendelijke groet,
-//         De Nieuwe Zaak`
-//     };
+        for (const variation of Object.values(keywords)) {
+            console.log(variation);
+            const url = `https://api.bigcommerce.com/stores/${process.env.BIGCOMMERCE_STORE_ID}/v3/catalog/products?keyword=${variation}&include_fields=name,description,price,sku`;
 
-//     // Send mail with defined transport object
-//     await transporter.sendMail(mailOptions);
-// }
+            try {
+                const response = await axios.get(url, {
+                    headers: {
+                        'X-Auth-Token': process.env.BIGCOMMERCE_API_TOKEN,
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                // console.log(response);
+
+                if (response.data.data.length > 0) {
+                    foundProduct = response.data.data.map(product => ({
+                        name: product.name,
+                        description: product.description,
+                        price: product.price,
+                        sku: product.sku,
+                        amount,
+                    }));
+                    break;
+                }
+            } catch (error) {
+                console.error("Error:", error);
+            }
+        }
+
+        if (foundProduct) {
+            return foundProduct;
+        } else {
+            throw new Error(`Failed to lookup product for keyword: ${Object.values(keywords).join(', ')}`);
+        }
+    });
+
+    const allProducts = await Promise.all(productPromises);
+    console.log(allProducts);
+    return { order: { products: allProducts.flat() } };
+}
 
 app.post("/contact", async (req, res) => {
     const { firstName, lastName, email, message, inventory } = req.body;
